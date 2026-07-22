@@ -276,135 +276,99 @@
       this.lastContent = '';
       this.chunkIndex = 0;
       this.responseContainer = null;
+      this.gotInitialContent = false;
 
-      // Wait for response container to appear
-      this.waitForResponse().then(container => {
-        if (!container) {
-          console.log('[AI Runtime] Response container not found');
-          this.sendError('Response container not found');
-          return;
-        }
+      console.log('[AI Runtime] Starting response observation');
 
-        console.log('[AI Runtime] Found response container, starting observer');
-        console.log('[AI Runtime] Container tag:', container.tagName, 'class:', container.className);
-        console.log('[AI Runtime] Initial content:', (container.innerText || '').substring(0, 100));
-
-        // Store reference to container
-        this.responseContainer = container;
-
-        // Set initial content as baseline
-        this.lastContent = container.innerText || container.textContent || '';
-
-        this.observer = new MutationObserver((mutations) => {
-          console.log('[AI Runtime] Mutation detected, mutations:', mutations.length);
-          const currentContent = container.innerText || container.textContent || '';
-          console.log('[AI Runtime] Current content length:', currentContent.length, 'Last length:', this.lastContent.length);
-
-          if (currentContent !== this.lastContent) {
-            const newContent = currentContent.slice(this.lastContent.length);
-            this.lastContent = currentContent;
-
-            if (newContent) {
-              this.chunkIndex++;
-              console.log('[AI Runtime] New chunk:', newContent.substring(0, 50));
-              this.sendChunk(newContent, this.chunkIndex);
-            }
-          }
-        });
-
-        this.observer.observe(container, {
-          childList: true,
-          subtree: true,
-          characterData: true
-        });
-
-        console.log('[AI Runtime] Observer started');
-
-        // Also use polling as backup
-        this.pollingInterval = setInterval(() => {
-          if (this.responseContainer) {
-            const currentContent = this.responseContainer.innerText || this.responseContainer.textContent || '';
-            if (currentContent !== this.lastContent) {
-              const newContent = currentContent.slice(this.lastContent.length);
-              this.lastContent = currentContent;
-              if (newContent) {
-                this.chunkIndex++;
-                console.log('[AI Runtime] Polling chunk:', newContent.substring(0, 50));
-                this.sendChunk(newContent, this.chunkIndex);
-              }
-            }
-          }
-        }, 500);
-
-        // Check for completion
-        this.checkCompletion();
-      });
-    }
-
-    async waitForResponse(timeout = 10000) {
-      const start = Date.now();
-      while (Date.now() - start < timeout) {
-        // Look for assistant response containers
+      // Use polling to detect new response content
+      // This is more reliable than MutationObserver for ChatGPT
+      this.pollingInterval = setInterval(() => {
+        // Find all assistant response containers
         const containers = document.querySelectorAll('[data-message-author-role="assistant"]');
-        if (containers.length > 0) {
-          // Get the last (newest) response
-          console.log('[AI Runtime] Found assistant response container');
-          return containers[containers.length - 1];
+
+        if (containers.length === 0) {
+          return; // No response yet
         }
 
-        // Also try markdown containers
-        const markdown = document.querySelector('.markdown');
-        if (markdown) {
-          console.log('[AI Runtime] Found markdown container');
-          return markdown;
-        }
+        // Get the last (newest) response
+        const container = containers[containers.length - 1];
+        const currentContent = container.innerText || container.textContent || '';
 
-        await new Promise(r => setTimeout(r, 500));
-      }
-      return null;
+        if (!this.gotInitialContent) {
+          // First time seeing content
+          if (currentContent.length > 0) {
+            console.log('[AI Runtime] Got initial response content, length:', currentContent.length);
+            this.gotInitialContent = true;
+            this.lastContent = currentContent;
+            this.responseContainer = container;
+
+            // Send initial content
+            this.chunkIndex++;
+            this.sendChunk(currentContent, this.chunkIndex);
+          }
+        } else if (currentContent !== this.lastContent) {
+          // Content changed
+          const newContent = currentContent.slice(this.lastContent.length);
+          this.lastContent = currentContent;
+
+          if (newContent) {
+            this.chunkIndex++;
+            console.log('[AI Runtime] New content, chunk:', this.chunkIndex);
+            this.sendChunk(newContent, this.chunkIndex);
+          }
+        }
+      }, 300);
+
+      // Check for completion
+      this.checkCompletion();
     }
 
     checkCompletion() {
-      console.log('[AI Runtime] Checking for completion');
+      console.log('[AI Runtime] Starting completion check');
       let completionChecked = false;
+      let lastContentLength = 0;
+      let stableCount = 0;
 
       const checkInterval = setInterval(() => {
+        if (completionChecked) return;
+
         const sendButton = document.querySelector('button[data-testid="send-button"]');
         const stopButton = document.querySelector('button[aria-label="Stop generating"]');
 
-        console.log('[AI Runtime] Completion check - sendButton:', !!sendButton, 'stopButton:', !!stopButton);
+        // Get current content length
+        const containers = document.querySelectorAll('[data-message-author-role="assistant"]');
+        const currentContent = containers.length > 0 ?
+          (containers[containers.length - 1].innerText || '').length : 0;
 
-        if (sendButton && !stopButton && !completionChecked) {
-          // Check if we have any content
-          const currentContent = this.responseContainer?.innerText || '';
-          console.log('[AI Runtime] Current response content length:', currentContent.length);
-
-          if (currentContent.length > 0) {
-            // Generation complete
-            console.log('[AI Runtime] Generation complete, clearing polling');
-            completionChecked = true;
-            clearInterval(checkInterval);
-            if (this.pollingInterval) {
-              clearInterval(this.pollingInterval);
-            }
-            this.stopObserving();
-            this.sendEnd();
-          }
+        // Check if content is stable (not changing)
+        if (currentContent === lastContentLength && currentContent > 0) {
+          stableCount++;
+        } else {
+          stableCount = 0;
+          lastContentLength = currentContent;
         }
-      }, 1000);
+
+        console.log('[AI Runtime] Completion check - stopButton:', !!stopButton, 'stableCount:', stableCount, 'contentLen:', currentContent);
+
+        // If no stop button and content has been stable for 3 seconds
+        if (!stopButton && stableCount >= 6 && currentContent > 0) {
+          console.log('[AI Runtime] Generation complete');
+          completionChecked = true;
+          clearInterval(checkInterval);
+          this.stopObserving();
+          this.sendEnd();
+        }
+      }, 500);
 
       // Safety timeout
       setTimeout(() => {
         if (!completionChecked) {
           console.log('[AI Runtime] Safety timeout reached');
           clearInterval(checkInterval);
-          if (this.pollingInterval) {
-            clearInterval(this.pollingInterval);
-          }
           this.stopObserving();
           this.sendEnd();
         }
-      }, 60000);
+      }, 90000);
     }
 
     stopObserving() {

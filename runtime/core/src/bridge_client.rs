@@ -54,7 +54,11 @@ impl BridgeClient {
     pub async fn disconnect(&mut self) -> Result<()> {
         if let Some(ws) = &mut self.ws {
             let mut ws = ws.lock().await;
-            ws.close(None).await?;
+            // Send close frame properly
+            let _ = ws.send(Message::Close(None)).await;
+            let _ = ws.flush().await;
+            // Wait a bit for the close frame to be transmitted
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
         self.ws = None;
         Ok(())

@@ -25,13 +25,18 @@ async fn main() -> Result<()> {
             let bridge_url = cli.bridge_url.as_deref().unwrap_or("ws://127.0.0.1:9527");
             let mut bridge_client = bridge_client::BridgeClient::new(bridge_url);
             bridge_client.connect().await?;
-            
+
             let provider_impl = providers::create_provider(&provider)?;
-            provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
+            let result = provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
                 print!("{}", chunk);
-            })).await?;
-            
+            })).await;
+
             println!();
+
+            // Properly close the connection
+            let _ = bridge_client.disconnect().await;
+
+            result?;
         }
         Commands::ListProviders => {
             let providers = providers::list_providers();
