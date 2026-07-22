@@ -148,26 +148,27 @@ Heartbeat pong.
 
 ## Connection Flow
 
-1. Browser connects to Bridge WebSocket
-2. Browser sends `Connect` event
+1. Chrome Extension (background script) connects to Bridge WebSocket
+2. Extension sends `Connect` event
 3. Bridge responds with `Ready` event
 4. Runtime sends `SendMessage` event
-5. Bridge routes to Browser
-6. Browser sends `MessageStart` event
-7. Browser sends `MessageChunk` events
-8. Browser sends `MessageEnd` event
+5. Bridge routes to Extension background script
+6. Background script forwards to content script
+7. Content script sends `MessageStart` event
+8. Content script sends `MessageChunk` events
+9. Content script sends `MessageEnd` event
 
 ## Reconnection
 
 If connection is lost:
-1. Browser detects disconnection
-2. Browser waits `RECONNECT_DELAY` (3000ms)
-3. Browser reconnects to Bridge
-4. Browser sends `Connect` event again
+1. Extension background script detects disconnection
+2. Waits `RECONNECT_DELAY` (3000ms)
+3. Reconnects to Bridge
+4. Sends `Connect` event again
 5. Bridge handles reconnection gracefully
 
 ## Heartbeat
 
-- Browser sends `Ping` every 30 seconds
+- Extension sends `Ping` every 30 seconds
 - Bridge responds with `Pong`
 - If no `Pong` received within 10 seconds, connection is considered dead

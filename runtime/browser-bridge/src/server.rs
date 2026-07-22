@@ -11,7 +11,8 @@ pub async fn run(port: u16) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!("Listening on {}", addr);
 
-    let (broadcast_tx, _) = broadcast::channel::<(String, Event)>(100);
+    // Increase buffer size to prevent message drops
+    let (broadcast_tx, _) = broadcast::channel::<(String, Event)>(1000);
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -37,34 +38,45 @@ async fn handle_connection(
     let ws = accept_async(stream).await?;
     let (mut ws_sender, mut ws_receiver) = ws.split();
 
-    let mut client_type: Option<String> = None;
+    // Default to "runtime" - clients that don't send Connect are treated as runtime
+    let mut client_type = Some("runtime".to_string());
     let mut rx = rx;
+
+    tracing::info!("Connection handler started for {}", addr);
 
     loop {
         tokio::select! {
             msg = ws_receiver.next() => {
                 match msg {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        tracing::debug!("Received raw text from {}: {}", addr, text);
                         let event: Event = serde_json::from_str(&text)?;
-                        tracing::debug!("Received event: {:?}", event);
+                        tracing::info!("Received event from {}: {:?}", addr, event);
 
                         match &event {
                             Event::Connect { provider, .. } => {
                                 client_type = Some("browser".to_string());
-                                tracing::info!("Browser connected for provider: {}", provider);
+                                tracing::info!("Browser connected for provider: {} from {}", provider, addr);
                                 let ready = Event::Ready {
                                     version: "0.1.0".to_string(),
                                 };
                                 ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
                                     serde_json::to_string(&ready)?,
                                 )).await?;
+                                tracing::info!("Sent Ready event to {}", addr);
                             }
-                            Event::SendMessage { .. } | Event::Cancel { .. } => {
-                                let _ = tx.send(("browser".to_string(), event));
+                            Event::SendMessage { provider, message } => {
+                                tracing::info!("Broadcasting SendMessage from {} for provider: {}", addr, provider);
+                                let _ = tx.send(("browser".to_string(), event.clone()));
+                                tracing::info!("SendMessage broadcast sent");
                             }
-                            Event::MessageStart { .. } | Event::MessageChunk { .. } 
+                            Event::Cancel { .. } => {
+                                let _ = tx.send(("browser".to_string(), event.clone()));
+                            }
+                            Event::MessageStart { .. } | Event::MessageChunk { .. }
                             | Event::MessageEnd { .. } | Event::Cancelled { .. } => {
-                                let _ = tx.send(("runtime".to_string(), event));
+                                tracing::info!("Broadcasting response event from {}", addr);
+                                let _ = tx.send(("runtime".to_string(), event.clone()));
                             }
                             Event::Ping { timestamp } => {
                                 let pong = Event::Pong { timestamp: *timestamp };
@@ -72,7 +84,9 @@ async fn handle_connection(
                                     serde_json::to_string(&pong)?,
                                 )).await?;
                             }
-                            _ => {}
+                            _ => {
+                                tracing::debug!("Unhandled event from {}: {:?}", addr, event);
+                            }
                         }
                     }
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {
@@ -80,19 +94,35 @@ async fn handle_connection(
                         break;
                     }
                     Some(Err(e)) => {
-                        tracing::error!("WebSocket error: {}", e);
+                        tracing::error!("WebSocket error from {}: {}", addr, e);
                         break;
                     }
-                    None => break,
+                    None => {
+                        tracing::info!("Connection ended from {}", addr);
+                        break;
+                    }
                     _ => {}
                 }
             }
             msg = rx.recv() => {
-                if let Ok((target, event)) = msg {
-                    if target == client_type.as_deref().unwrap_or("") {
-                        ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
-                            serde_json::to_string(&event)?,
-                        )).await?;
+                match msg {
+                    Ok((target, event)) => {
+                        let client = client_type.as_deref().unwrap_or("");
+                        tracing::debug!("Broadcast received: target={}, client={}", target, client);
+                        if target == client {
+                            tracing::info!("Sending event to {}: {:?}", addr, event);
+                            ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
+                                serde_json::to_string(&event)?,
+                            )).await?;
+                            tracing::info!("Event sent to {}", addr);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Connection {} lagged by {} messages", addr, n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Broadcast channel closed for {}", addr);
+                        break;
                     }
                 }
             }

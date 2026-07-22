@@ -20,7 +20,7 @@ interface Provider {
 
 ### ChatGPT Provider
 
-**File:** `browser/providers/chatgpt.js`
+**File:** `browser-extension/content.js` (ChatGptProvider class)
 
 **Selectors:**
 - Input textarea: `#prompt-textarea`, `textarea[placeholder*="Message"]`
@@ -39,7 +39,7 @@ interface Provider {
 
 ### Gemini Provider
 
-**File:** `browser/providers/gemini.js`
+**File:** `browser-extension/content.js` (GeminiProvider class)
 
 **Selectors:**
 - Input area: `.ql-editor`, `[contenteditable="true"]`
@@ -58,11 +58,11 @@ interface Provider {
 
 ## Adding a New Provider
 
-1. Create a new file in `browser/providers/`
+1. Add a new class in `browser-extension/content.js`
 2. Extend `BaseProvider` class
 3. Implement required methods
 4. Add detection logic in `detectProvider()`
-5. Update metadata block in userscript
+5. Update `manifest.json` to include the new URL pattern
 
 ### Example
 

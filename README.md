@@ -5,7 +5,7 @@ A browser-backed multi-provider LLM runtime that allows any frontend (CLI, VSCod
 ## Architecture
 
 ```
-User → Frontend (CLI/VSCode/Pi) → Runtime (Rust) → Browser Bridge (Rust) → Tampermonkey (TypeScript) → AI Websites
+User → Frontend (CLI/VSCode/Pi) → Runtime (Rust) → Browser Bridge (Rust) → Chrome Extension → AI Websites
 ```
 
 ## Key Principles
@@ -30,11 +30,12 @@ User → Frontend (CLI/VSCode/Pi) → Runtime (Rust) → Browser Bridge (Rust) �
 - Heartbeat and reconnection
 - Message routing
 
-### Tampermonkey Runtime (TypeScript)
+### Browser Extension (TypeScript)
 - DOM operations
 - Streaming observation
 - File upload/download
 - Provider-specific UI operations
+- Bypasses page CSP restrictions
 
 ## Quick Start
 
@@ -50,12 +51,13 @@ cargo build --release
 cargo run -p browser-bridge
 ```
 
-### 3. Install the Tampermonkey Script
+### 3. Install the Browser Extension
 
-1. Open your browser with Tampermonkey installed
-2. Create a new userscript
-3. Copy the contents of `browser/userscript.js`
-4. Save and enable the script
+1. Open Chrome and navigate to `chrome://extensions/`
+2. Enable "Developer mode" (top right toggle)
+3. Click "Load unpacked"
+4. Select the `browser-extension` folder
+5. The extension icon should appear in your toolbar
 
 ### 4. Open an AI Website
 

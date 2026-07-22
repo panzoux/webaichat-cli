@@ -37,11 +37,11 @@ Separate executable that handles:
 
 The Browser Bridge contains NO planner logic. It should remain thin and stable.
 
-### Tampermonkey Runtime (TypeScript)
+### Browser Extension (TypeScript)
 
-Runs inside browser and handles:
-- Receive commands
-- Execute DOM operations
+Chrome Extension that runs in a separate context (bypassing page CSP):
+- Background script handles WebSocket connection to Bridge
+- Content script handles DOM operations
 - Observe streaming
 - Upload files
 - Download files
@@ -55,11 +55,12 @@ Runs inside browser and handles:
 2. CLI sends message to Runtime
 3. Runtime selects provider
 4. Runtime sends message to Browser Bridge
-5. Browser Bridge routes to Tampermonkey
-6. Tampermonkey executes DOM operations
-7. Tampermonkey observes streaming response
-8. Tampermonkey sends chunks back through Bridge
-9. Runtime displays chunks to CLI
+5. Browser Bridge routes to Chrome Extension (background script)
+6. Background script forwards to content script
+7. Content script executes DOM operations
+8. Content script observes streaming response
+9. Content script sends chunks back through Bridge
+10. Runtime displays chunks to CLI
 ```
 
 ## Protocol
