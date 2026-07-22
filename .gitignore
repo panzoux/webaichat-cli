@@ -1,0 +1,18 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Logs
+*.log
+
+# Config
+runtime.toml
+bridge.toml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "runtime/core",
+    "runtime/browser-bridge",
+    "frontends/cli",
+]
+resolver = "2"
