@@ -12,14 +12,19 @@ async fn main() -> Result<()> {
         Commands::Send { provider, message } => {
             let bridge_url = cli.bridge_url.as_deref().unwrap_or("ws://127.0.0.1:9527");
             let mut bridge_client = BridgeClient::new(bridge_url);
-            bridge_client.connect().await?;
-            
+            bridge_client.connect(bridge_url).await?;
+
             let provider_impl = providers::create_provider(&provider)?;
-            provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
+            let result = provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
                 print!("{}", chunk);
-            })).await?;
-            
+            })).await;
+
             println!();
+
+            // Properly close the WebSocket connection with close handshake
+            bridge_client.disconnect().await?;
+
+            result?;
         }
         Commands::ListProviders => {
             let providers = providers::list_providers();

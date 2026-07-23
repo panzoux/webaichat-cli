@@ -94,7 +94,14 @@ async fn handle_connection(
                         break;
                     }
                     Some(Err(e)) => {
-                        tracing::error!("WebSocket error from {}: {}", addr, e);
+                        // Treat "Connection reset without closing handshake" as a warning
+                        // This is common when browsers refresh or CLI exits
+                        let msg = e.to_string();
+                        if msg.contains("Connection reset") || msg.contains("without closing handshake") {
+                            tracing::warn!("Client {} disconnected without close handshake: {}", client_type.as_deref().unwrap_or("unknown"), addr);
+                        } else {
+                            tracing::error!("WebSocket error from {}: {}", addr, e);
+                        }
                         break;
                     }
                     None => {

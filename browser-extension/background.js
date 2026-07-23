@@ -138,6 +138,14 @@ async function handleSendMessage(event) {
   // Track this tab
   connectedTabs.set(targetTab.id, event.provider);
 
+  // Try to activate the tab (may not work on Windows due to focus stealing prevention)
+  try {
+    console.log('[AI Runtime BG] Activating tab:', targetTab.id);
+    await chrome.tabs.update(targetTab.id, { active: true });
+  } catch (e) {
+    console.log('[AI Runtime BG] Tab activation failed:', e.message);
+  }
+
   // Inject content script and send message
   try {
     console.log('[AI Runtime BG] Injecting content script into tab:', targetTab.id);
@@ -184,6 +192,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Forward to bridge
   sendToBridge(message);
+
+  // Show notification when response is complete
+  if (message.type === 'MessageEnd') {
+    const provider = message.provider || 'AI';
+    chrome.notifications.create({
+      type: 'basic',
+      title: `${provider} Response Ready`,
+      message: 'Check the CLI for the response',
+      priority: 2
+    }).catch(() => {
+      // Notifications might not be available
+    });
+  }
 
   sendResponse({ received: true });
   return true;

@@ -277,17 +277,26 @@
       this.chunkIndex = 0;
       this.responseContainer = null;
       this.gotInitialContent = false;
+      this.startTime = Date.now();
 
       console.log('[AI Runtime] Starting response observation');
 
       // Use polling to detect new response content
-      // This is more reliable than MutationObserver for ChatGPT
       this.pollingInterval = setInterval(() => {
-        // Find all assistant response containers
-        const containers = document.querySelectorAll('[data-message-author-role="assistant"]');
+        // Find all assistant response containers - try multiple selectors
+        let containers = document.querySelectorAll('[data-message-author-role="assistant"]');
+
+        // Fallback: try other selectors
+        if (containers.length === 0) {
+          containers = document.querySelectorAll('.markdown');
+        }
+        if (containers.length === 0) {
+          containers = document.querySelectorAll('[class*="response"]');
+        }
 
         if (containers.length === 0) {
-          return; // No response yet
+          console.log('[AI Runtime] No response containers found yet');
+          return;
         }
 
         // Get the last (newest) response
@@ -332,43 +341,51 @@
       const checkInterval = setInterval(() => {
         if (completionChecked) return;
 
-        const sendButton = document.querySelector('button[data-testid="send-button"]');
-        const stopButton = document.querySelector('button[aria-label="Stop generating"]');
+        // Check for stop button - try multiple selectors
+        const stopButton = document.querySelector('button[aria-label="Stop generating"]') ||
+                           document.querySelector('button[aria-label="Stop"]') ||
+                           document.querySelector('[data-testid="stop-button"]');
 
         // Get current content length
         const containers = document.querySelectorAll('[data-message-author-role="assistant"]');
-        const currentContent = containers.length > 0 ?
-          (containers[containers.length - 1].innerText || '').length : 0;
+        let currentContent = '';
+        if (containers.length > 0) {
+          currentContent = containers[containers.length - 1].innerText || '';
+        }
+
+        const currentLength = currentContent.length;
 
         // Check if content is stable (not changing)
-        if (currentContent === lastContentLength && currentContent > 0) {
+        if (currentLength === lastContentLength && currentLength > 0) {
           stableCount++;
         } else {
           stableCount = 0;
-          lastContentLength = currentContent;
+          lastContentLength = currentLength;
         }
 
-        console.log('[AI Runtime] Completion check - stopButton:', !!stopButton, 'stableCount:', stableCount, 'contentLen:', currentContent);
+        // Only log every 2 seconds to reduce noise
+        if (stableCount % 4 === 0) {
+          console.log('[AI Runtime] Completion check - stopButton:', !!stopButton, 'stableCount:', stableCount, 'contentLen:', currentLength);
+        }
 
-        // If no stop button and content has been stable for 3 seconds
-        if (!stopButton && stableCount >= 6 && currentContent > 0) {
-          console.log('[AI Runtime] Generation complete');
+        // If no stop button and content has been stable for 2 seconds (4 * 500ms)
+        if (!stopButton && stableCount >= 4 && currentLength > 0) {
+          console.log('[AI Runtime] Generation complete, final content length:', currentLength);
+          completionChecked = true;
+          clearInterval(checkInterval);
+          this.stopObserving();
+          this.sendEnd();
+        }
+
+        // Also check if we've been waiting too long (60 seconds)
+        if (Date.now() - this.startTime > 60000 && !completionChecked) {
+          console.log('[AI Runtime] Timeout reached, sending end');
           completionChecked = true;
           clearInterval(checkInterval);
           this.stopObserving();
           this.sendEnd();
         }
       }, 500);
-
-      // Safety timeout
-      setTimeout(() => {
-        if (!completionChecked) {
-          console.log('[AI Runtime] Safety timeout reached');
-          clearInterval(checkInterval);
-          this.stopObserving();
-          this.sendEnd();
-        }
-      }, 90000);
     }
 
     stopObserving() {
