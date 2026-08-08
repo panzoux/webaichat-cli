@@ -135,32 +135,72 @@ async function handleSendMessage(event) {
     return;
   }
 
-  // Track this tab
+  // Track tab, un-minimize window if minimized, and focus tab to prevent throttling
   connectedTabs.set(targetTab.id, event.provider);
-
-  // Inject content script and send message
   try {
-    console.log('[AI Runtime BG] Injecting content script into tab:', targetTab.id);
-    await chrome.scripting.executeScript({
-      target: { tabId: targetTab.id },
-      files: ['content.js']
-    });
+    if (targetTab.windowId !== undefined) {
+      // Request window restore
+      await chrome.windows.update(targetTab.windowId, { state: 'normal', focused: true });
 
-    console.log('[AI Runtime BG] Sending message to content script');
-    chrome.tabs.sendMessage(targetTab.id, {
-      type: 'SendMessage',
-      provider: event.provider,
-      message: event.message
-    });
-    console.log('[AI Runtime BG] Message sent to content script');
+      // Poll until window is actually in 'normal' state (not still 'minimized').
+      // Chrome's update() resolves before the OS finishes restoring the window,
+      // so content script timers would still be throttled if we send immediately.
+      for (let attempts = 0; attempts < 20; attempts++) {
+        await new Promise((r) => setTimeout(r, 150));
+        try {
+          const win = await chrome.windows.get(targetTab.windowId);
+          if (win.state === 'normal' || win.state === 'maximized') {
+            console.log('[AI Runtime BG] Window restored to state:', win.state);
+            break;
+          }
+          console.log('[AI Runtime BG] Waiting for window restore, state:', win.state);
+        } catch (_) {
+          break;
+        }
+      }
+
+      // Extra settle time so Chrome fully lifts throttling on the tab's timers
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    await chrome.tabs.update(targetTab.id, { active: true });
   } catch (e) {
-    console.error('[AI Runtime BG] Error injecting script:', e);
-    sendToBridge({
-      type: 'Error',
-      provider: event.provider,
-      message: e.message
-    });
+    console.log('[AI Runtime BG] Could not un-minimize/activate window:', e);
   }
+
+  // Now the window is restored — safe to send to content script
+  async function sendToContentScript() {
+    try {
+      console.log('[AI Runtime BG] Sending message to content script in tab:', targetTab.id);
+      chrome.tabs.sendMessage(targetTab.id, {
+        type: 'SendMessage',
+        provider: event.provider,
+        message: event.message
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.log('[AI Runtime BG] Script fallback executing script:', chrome.runtime.lastError.message);
+          chrome.scripting.executeScript({
+            target: { tabId: targetTab.id },
+            files: ['content.js']
+          }).then(() => {
+            chrome.tabs.sendMessage(targetTab.id, {
+              type: 'SendMessage',
+              provider: event.provider,
+              message: event.message
+            });
+          });
+        }
+      });
+    } catch (e) {
+      console.error('[AI Runtime BG] Error sending message to tab:', e);
+      sendToBridge({
+        type: 'Error',
+        provider: event.provider,
+        message: e.message
+      });
+    }
+  }
+
+  await sendToContentScript();
 }
 
 function handleCancel(event) {

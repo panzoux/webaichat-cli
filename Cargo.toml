@@ -3,5 +3,6 @@ members = [
     "runtime/core",
     "runtime/browser-bridge",
     "frontends/cli",
+    "frontends/chatto",
 ]
 resolver = "2"

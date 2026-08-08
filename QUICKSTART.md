@@ -100,9 +100,17 @@ web-llm-runtime/
 
 ### Running Tests
 
-```bash
-cargo test
-```
+- **Unit & Protocol Tests**:
+  ```bash
+  cargo test
+  ```
+
+- **Automated Real Browser E2E Test**:
+  ```bash
+  test-e2e.bat
+  # or
+  cd tests && npm test
+  ```
 
 ### Building Documentation
 

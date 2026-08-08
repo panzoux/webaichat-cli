@@ -50,7 +50,13 @@ async fn handle_connection(
                 match msg {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
                         tracing::debug!("Received raw text from {}: {}", addr, text);
-                        let event: Event = serde_json::from_str(&text)?;
+                        let event: Event = match serde_json::from_str(&text) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                tracing::error!("Error parsing JSON event from {}: {} | raw payload: {}", addr, e, text);
+                                continue;
+                            }
+                        };
                         tracing::info!("Received event from {}: {:?}", addr, event);
 
                         match &event {
@@ -111,9 +117,17 @@ async fn handle_connection(
                         tracing::debug!("Broadcast received: target={}, client={}", target, client);
                         if target == client {
                             tracing::info!("Sending event to {}: {:?}", addr, event);
-                            ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
-                                serde_json::to_string(&event)?,
-                            )).await?;
+                            let json = match serde_json::to_string(&event) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    tracing::error!("Error serializing event to JSON: {}", e);
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
+                                tracing::info!("Client {} disconnected during event send: {}", addr, e);
+                                break;
+                            }
                             tracing::info!("Event sent to {}", addr);
                         }
                     }

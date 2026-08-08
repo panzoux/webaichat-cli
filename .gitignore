@@ -16,3 +16,10 @@ bridge.toml
 # OS
 .DS_Store
 Thumbs.db
+
+# Node / e2e tests
+tests/node_modules/
+tests/.chrome-test-profile/
+
+# Claude Code local/personal overrides (machine-specific paths, hooks, etc.)
+.claude/settings.local.json

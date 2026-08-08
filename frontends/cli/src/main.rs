@@ -14,9 +14,11 @@ async fn main() -> Result<()> {
             let mut bridge_client = BridgeClient::new(bridge_url);
             bridge_client.connect().await?;
             
+            use std::io::{self, Write};
             let provider_impl = providers::create_provider(&provider)?;
             provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
                 print!("{}", chunk);
+                let _ = io::stdout().flush();
             })).await?;
             
             println!();

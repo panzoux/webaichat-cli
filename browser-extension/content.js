@@ -4,14 +4,7 @@
 (function() {
   'use strict';
 
-  // Prevent multiple injections
-  if (window.__aiRuntimeLoaded) {
-    console.log('[AI Runtime] Content script already loaded, skipping');
-    return;
-  }
-  window.__aiRuntimeLoaded = true;
-
-  console.log('[AI Runtime] Content script loaded');
+  console.log('[AI Runtime] Content script initialized');
 
   let currentProvider = null;
   let currentMessageId = null;
@@ -43,24 +36,34 @@
     return null;
   }
 
-  // Listen for messages from background script
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('[AI Runtime] Received message:', message.type, message);
+  // Listen for messages from background script (register listener exactly once per window)
+  if (!window.__aiRuntimeListenerRegistered) {
+    window.__aiRuntimeListenerRegistered = true;
 
-    if (message.type === 'SendMessage') {
-      console.log('[AI Runtime] Handling SendMessage');
-      handleSendMessage(message);
-    } else if (message.type === 'Cancel') {
-      console.log('[AI Runtime] Handling Cancel');
-      handleCancel(message);
-    }
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      console.log('[AI Runtime] Received message:', message.type, message);
 
-    sendResponse({ received: true });
-    return true;
-  });
+      if (message.type === 'SendMessage') {
+        console.log('[AI Runtime] Handling SendMessage');
+        handleSendMessage(message);
+      } else if (message.type === 'Cancel') {
+        console.log('[AI Runtime] Handling Cancel');
+        handleCancel(message);
+      }
+
+      sendResponse({ received: true });
+      return true;
+    });
+  }
 
   function handleSendMessage(event) {
     console.log('[AI Runtime] handleSendMessage called with:', event);
+
+    // Stop active provider observer if one is running
+    if (currentProvider && typeof currentProvider.stopObserving === 'function') {
+      console.log('[AI Runtime] Cleaning up active provider observer');
+      currentProvider.stopObserving();
+    }
 
     currentProvider = detectProvider();
     currentMessageId = generateId();
@@ -98,6 +101,30 @@
     });
   }
 
+  // Never let a diffed chunk end with an unpaired UTF-16 high surrogate (the
+  // first half of an emoji/astral character). JSON.stringify escapes a lone
+  // surrogate as literal "\uXXXX" text, which serde_json on the bridge server
+  // rejects as invalid ("unexpected end of hex escape" / "lone leading
+  // surrogate"). Clamping here holds the surrogate back so it's included
+  // whole with its pair on the next diff, a poll tick (200ms) later.
+  function clampTrailingSurrogate(text) {
+    if (text.length > 0) {
+      const code = text.charCodeAt(text.length - 1);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        return text.slice(0, -1);
+      }
+    }
+    return text;
+  }
+
+  // How long to wait for the DOM to go quiet before reading it. Markdown/code
+  // renderers (syntax highlighting, fence-marker cleanup) rewrite their output
+  // across several back-to-back mutations as a message streams in; reading
+  // immediately on every mutation risks catching a transient, not-yet-final
+  // state (e.g. a code fence's raw ```lang marker before it's swapped for the
+  // highlighted block).
+  const SETTLE_DELAY_MS = 150;
+
   class BaseProvider {
     sendChunk(content, index) {
       console.log('[AI Runtime] sendChunk:', content.substring(0, 50));
@@ -133,127 +160,108 @@
     constructor() {
       super();
       this.observer = null;
+      this.pollingInterval = null;
       this.lastContent = '';
       this.chunkIndex = 0;
+      this.initialAssistantCount = 0;
     }
 
     getName() {
       return 'chatgpt';
     }
 
+    getLatestAssistantContainer() {
+      // Modern ChatGPT selectors
+      const containers = document.querySelectorAll('[data-message-author-role="assistant"]');
+      if (containers.length > 0) {
+        return containers[containers.length - 1];
+      }
+
+      const markdowns = document.querySelectorAll('.markdown');
+      if (markdowns.length > 0) {
+        return markdowns[markdowns.length - 1];
+      }
+
+      const articles = document.querySelectorAll('article');
+      if (articles.length > 0) {
+        return articles[articles.length - 1];
+      }
+
+      return null;
+    }
+
     async sendMessage(message, messageId) {
       console.log('[AI Runtime] ChatGPT sendMessage:', message);
 
       try {
-        // Wait for page to be ready
-        console.log('[AI Runtime] Waiting for textarea...');
-        await this.waitForElement('#prompt-textarea', 10000);
+        // Record initial count of assistant messages
+        const initialContainers = document.querySelectorAll('[data-message-author-role="assistant"]');
+        this.initialAssistantCount = initialContainers.length;
 
-        // Find the textarea - ChatGPT uses a ProseMirror editor
-        const textarea = document.querySelector('#prompt-textarea');
+        // Find the input element
+        console.log('[AI Runtime] Waiting for input textarea...');
+        let textarea = await this.waitForElement('#prompt-textarea', 8000) ||
+                       document.querySelector('textarea') ||
+                       document.querySelector('div[contenteditable="true"]');
 
         if (!textarea) {
           console.log('[AI Runtime] Textarea not found');
-          this.sendError('Could not find input textarea');
+          this.sendError('Could not find input element (#prompt-textarea)');
           return;
         }
 
-        console.log('[AI Runtime] Found textarea');
+        console.log('[AI Runtime] Found input element');
 
-        // Focus the textarea
+        // Focus & clear/type
         textarea.focus();
         textarea.click();
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 150));
 
-        // Clear existing content and type message using keyboard events
-        console.log('[AI Runtime] Typing message...');
-
-        // Select all existing text
+        // Clear existing ProseMirror/textarea content
         document.execCommand('selectAll', false, null);
-        await new Promise(r => setTimeout(r, 50));
-
-        // Delete selected text
         document.execCommand('delete', false, null);
         await new Promise(r => setTimeout(r, 50));
 
-        // Type the message using insertText
+        // Use execCommand for ProseMirror/contenteditable compatibility
         document.execCommand('insertText', false, message);
 
-        await new Promise(r => setTimeout(r, 500));
+        // Fallback for native textarea value
+        if (textarea.tagName === 'TEXTAREA' && textarea.value !== message) {
+          textarea.value = message;
+        }
 
-        // Verify content was set
-        const currentContent = textarea.textContent || textarea.innerText;
-        console.log('[AI Runtime] Content after input:', currentContent.substring(0, 50));
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
 
-        // Wait for send button to appear and become enabled
-        console.log('[AI Runtime] Waiting for send button...');
+        await new Promise(r => setTimeout(r, 300));
 
+        // Locate send button
+        console.log('[AI Runtime] Looking for send button...');
         let sendButton = null;
         const startTime = Date.now();
-        const timeout = 10000;
 
-        while (Date.now() - startTime < timeout) {
-          // Try multiple selectors
+        while (Date.now() - startTime < 8000) {
           sendButton = document.querySelector('button[data-testid="send-button"]') ||
-                       document.querySelector('button[aria-label="Send prompt"]') ||
-                       document.querySelector('button[aria-label="Send"]');
+                       document.querySelector('button[data-testid="fruitjuice-send-button"]') ||
+                       document.querySelector('button[aria-label*="Send"]');
 
-          if (sendButton) {
-            console.log('[AI Runtime] Found send button');
-            break;
-          }
-
-          // Debug: log what we see
-          const buttons = document.querySelectorAll('button');
-          const buttonInfo = Array.from(buttons).map(b => ({
-            testid: b.getAttribute('data-testid'),
-            label: b.getAttribute('aria-label'),
-            disabled: b.disabled,
-            text: b.textContent?.substring(0, 20)
-          }));
-          console.log('[AI Runtime] Available buttons:', JSON.stringify(buttonInfo.slice(0, 10)));
-
-          await new Promise(r => setTimeout(r, 500));
+          if (sendButton && !sendButton.disabled) break;
+          await new Promise(r => setTimeout(r, 200));
         }
 
-        if (!sendButton) {
-          console.log('[AI Runtime] Send button not found after waiting');
-          this.sendError('Could not find send button');
-          return;
+        if (sendButton && !sendButton.disabled) {
+          console.log('[AI Runtime] Clicking send button');
+          sendButton.click();
+        } else {
+          console.log('[AI Runtime] Send button disabled/not found, dispatching Enter key');
+          const enterEvent = new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
+          });
+          textarea.dispatchEvent(enterEvent);
         }
 
-        // Wait for button to be enabled
-        console.log('[AI Runtime] Waiting for send button to be enabled...');
-        while (sendButton.disabled && Date.now() - startTime < timeout) {
-          await new Promise(r => setTimeout(r, 100));
-        }
-
-        if (sendButton.disabled) {
-          console.log('[AI Runtime] Send button is disabled');
-          this.sendError('Send button is disabled');
-          return;
-        }
-
-        console.log('[AI Runtime] Clicking send button');
-
-        // Click the send button
-        sendButton.click();
-
-        // Also try keyboard shortcut as backup
-        await new Promise(r => setTimeout(r, 200));
-        console.log('[AI Runtime] Also trying Enter key...');
-        textarea.focus();
-        const enterEvent = new KeyboardEvent('keydown', {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true
-        });
-        textarea.dispatchEvent(enterEvent);
-
-        // Start observing the response
-        console.log('[AI Runtime] Starting to observe response');
+        // Start observing response
+        console.log('[AI Runtime] Starting response observer');
         this.startObserving();
 
       } catch (e) {
@@ -275,136 +283,114 @@
     startObserving() {
       this.lastContent = '';
       this.chunkIndex = 0;
-      this.responseContainer = null;
+      this.debounceTimer = null;
+      let hasStartedStream = false;
 
-      // Wait for response container to appear
-      this.waitForResponse().then(container => {
-        if (!container) {
-          console.log('[AI Runtime] Response container not found');
-          this.sendError('Response container not found');
-          return;
+      const mainContainer = document.querySelector('main') || document.body;
+
+      const processContentUpdate = () => {
+        const currentContainer = this.getLatestAssistantContainer();
+        if (!currentContainer) return;
+
+        const currentContainersCount = document.querySelectorAll('[data-message-author-role="assistant"]').length;
+
+        // If a new message node appeared, reset lastContent baseline for the new container
+        if (!hasStartedStream && currentContainersCount > this.initialAssistantCount) {
+          hasStartedStream = true;
+          this.lastContent = '';
         }
 
-        console.log('[AI Runtime] Found response container, starting observer');
-        console.log('[AI Runtime] Container tag:', container.tagName, 'class:', container.className);
-        console.log('[AI Runtime] Initial content:', (container.innerText || '').substring(0, 100));
+        const currentContent = clampTrailingSurrogate(currentContainer.innerText || currentContainer.textContent || '');
+        if (currentContent === this.lastContent) return;
 
-        // Store reference to container
-        this.responseContainer = container;
+        if (currentContent.startsWith(this.lastContent)) {
+          const newContent = currentContent.slice(this.lastContent.length);
+          this.lastContent = currentContent;
 
-        // Set initial content as baseline
-        this.lastContent = container.innerText || container.textContent || '';
-
-        this.observer = new MutationObserver((mutations) => {
-          console.log('[AI Runtime] Mutation detected, mutations:', mutations.length);
-          const currentContent = container.innerText || container.textContent || '';
-          console.log('[AI Runtime] Current content length:', currentContent.length, 'Last length:', this.lastContent.length);
-
-          if (currentContent !== this.lastContent) {
-            const newContent = currentContent.slice(this.lastContent.length);
-            this.lastContent = currentContent;
-
-            if (newContent) {
-              this.chunkIndex++;
-              console.log('[AI Runtime] New chunk:', newContent.substring(0, 50));
-              this.sendChunk(newContent, this.chunkIndex);
-            }
+          if (newContent) {
+            hasStartedStream = true;
+            this.chunkIndex++;
+            console.log('[AI Runtime] Chunk #', this.chunkIndex, ':', newContent.substring(0, 40));
+            this.sendChunk(newContent, this.chunkIndex);
           }
-        });
+        } else {
+          // The DOM was rewritten, not just appended to (e.g. a code block
+          // just got swapped from raw markdown to syntax-highlighted HTML).
+          // We can't retract chunks already streamed, so resync silently
+          // instead of sending a duplicate/garbled one.
+          console.log('[AI Runtime] Non-append DOM change detected, resyncing without emitting a chunk');
+          this.lastContent = currentContent;
+        }
+      };
 
-        this.observer.observe(container, {
-          childList: true,
-          subtree: true,
-          characterData: true
-        });
+      const scheduleProcess = () => {
+        if (this.debounceTimer) clearTimeout(this.debounceTimer);
+        this.debounceTimer = setTimeout(() => {
+          this.debounceTimer = null;
+          processContentUpdate();
+        }, SETTLE_DELAY_MS);
+      };
 
-        console.log('[AI Runtime] Observer started');
-
-        // Also use polling as backup
-        this.pollingInterval = setInterval(() => {
-          if (this.responseContainer) {
-            const currentContent = this.responseContainer.innerText || this.responseContainer.textContent || '';
-            if (currentContent !== this.lastContent) {
-              const newContent = currentContent.slice(this.lastContent.length);
-              this.lastContent = currentContent;
-              if (newContent) {
-                this.chunkIndex++;
-                console.log('[AI Runtime] Polling chunk:', newContent.substring(0, 50));
-                this.sendChunk(newContent, this.chunkIndex);
-              }
-            }
-          }
-        }, 500);
-
-        // Check for completion
-        this.checkCompletion();
+      // MutationObserver on full main chat container
+      this.observer = new MutationObserver(() => {
+        scheduleProcess();
       });
-    }
 
-    async waitForResponse(timeout = 10000) {
-      const start = Date.now();
-      while (Date.now() - start < timeout) {
-        // Look for assistant response containers
-        const containers = document.querySelectorAll('[data-message-author-role="assistant"]');
-        if (containers.length > 0) {
-          // Get the last (newest) response
-          console.log('[AI Runtime] Found assistant response container');
-          return containers[containers.length - 1];
-        }
+      this.observer.observe(mainContainer, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
 
-        // Also try markdown containers
-        const markdown = document.querySelector('.markdown');
-        if (markdown) {
-          console.log('[AI Runtime] Found markdown container');
-          return markdown;
-        }
+      // Polling backup every 200ms, debounced through the same settle window
+      this.pollingInterval = setInterval(() => {
+        scheduleProcess();
+      }, 200);
 
-        await new Promise(r => setTimeout(r, 500));
-      }
-      return null;
+      // Completion check
+      this.checkCompletion(hasStartedStream);
     }
 
     checkCompletion() {
-      console.log('[AI Runtime] Checking for completion');
       let completionChecked = false;
+      let noChunkCount = 0;
+      let lastChunkIndex = 0;
+      const startTime = Date.now();
 
       const checkInterval = setInterval(() => {
-        const sendButton = document.querySelector('button[data-testid="send-button"]');
-        const stopButton = document.querySelector('button[aria-label="Stop generating"]');
+        const elapsed = Date.now() - startTime;
 
-        console.log('[AI Runtime] Completion check - sendButton:', !!sendButton, 'stopButton:', !!stopButton);
+        if (this.chunkIndex > 0) {
+          if (this.chunkIndex === lastChunkIndex) {
+            noChunkCount++;
+          } else {
+            lastChunkIndex = this.chunkIndex;
+            noChunkCount = 0;
+          }
 
-        if (sendButton && !stopButton && !completionChecked) {
-          // Check if we have any content
-          const currentContent = this.responseContainer?.innerText || '';
-          console.log('[AI Runtime] Current response content length:', currentContent.length);
-
-          if (currentContent.length > 0) {
-            // Generation complete
-            console.log('[AI Runtime] Generation complete, clearing polling');
+          // If no new chunks received for 2.5 seconds (5 consecutive checks), stream has completed!
+          if (noChunkCount >= 5 && !completionChecked) {
+            console.log('[AI Runtime] Stream completed (inactivity detection)');
             completionChecked = true;
             clearInterval(checkInterval);
-            if (this.pollingInterval) {
-              clearInterval(this.pollingInterval);
-            }
             this.stopObserving();
             this.sendEnd();
+            return;
           }
         }
-      }, 1000);
 
-      // Safety timeout
-      setTimeout(() => {
-        if (!completionChecked) {
-          console.log('[AI Runtime] Safety timeout reached');
+        if (elapsed > 35000 && !completionChecked) {
+          console.log('[AI Runtime] Stream timeout reached');
+          completionChecked = true;
           clearInterval(checkInterval);
-          if (this.pollingInterval) {
-            clearInterval(this.pollingInterval);
-          }
           this.stopObserving();
-          this.sendEnd();
+          if (this.chunkIndex > 0) {
+            this.sendEnd();
+          } else {
+            this.sendError('Timed out waiting for ChatGPT response.');
+          }
         }
-      }, 60000);
+      }, 500);
     }
 
     stopObserving() {
@@ -415,6 +401,10 @@
       if (this.pollingInterval) {
         clearInterval(this.pollingInterval);
         this.pollingInterval = null;
+      }
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = null;
       }
     }
 
@@ -434,6 +424,7 @@
       this.observer = null;
       this.lastContent = '';
       this.chunkIndex = 0;
+      this.debounceTimer = null;
     }
 
     getName() {
@@ -514,10 +505,11 @@
 
         console.log('[AI Runtime] Found response container, starting observer');
 
-        this.observer = new MutationObserver(() => {
-          const currentContent = container.innerText || container.textContent;
+        const processContentUpdate = () => {
+          const currentContent = clampTrailingSurrogate(container.innerText || container.textContent || '');
+          if (currentContent === this.lastContent) return;
 
-          if (currentContent !== this.lastContent) {
+          if (currentContent.startsWith(this.lastContent)) {
             const newContent = currentContent.slice(this.lastContent.length);
             this.lastContent = currentContent;
 
@@ -525,7 +517,20 @@
               this.chunkIndex++;
               this.sendChunk(newContent, this.chunkIndex);
             }
+          } else {
+            // Non-append DOM rewrite (e.g. markdown/code re-render). Can't
+            // retract already-streamed chunks — resync without emitting.
+            console.log('[AI Runtime] Non-append DOM change detected, resyncing without emitting a chunk');
+            this.lastContent = currentContent;
           }
+        };
+
+        this.observer = new MutationObserver(() => {
+          if (this.debounceTimer) clearTimeout(this.debounceTimer);
+          this.debounceTimer = setTimeout(() => {
+            this.debounceTimer = null;
+            processContentUpdate();
+          }, SETTLE_DELAY_MS);
         });
 
         this.observer.observe(container, {
@@ -577,6 +582,10 @@
       if (this.observer) {
         this.observer.disconnect();
         this.observer = null;
+      }
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = null;
       }
     }
 

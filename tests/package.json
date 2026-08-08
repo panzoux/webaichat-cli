@@ -1,0 +1,13 @@
+{
+  "name": "webaichat-e2e-tests",
+  "version": "1.0.0",
+  "description": "Automated E2E tests for web-llm-runtime",
+  "type": "module",
+  "scripts": {
+    "test": "node run-e2e.js"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0",
+    "ws": "^8.21.2"
+  }
+}
