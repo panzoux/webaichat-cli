@@ -3,6 +3,7 @@ use web_llm_runtime::bridge_client::BridgeClient;
 use web_llm_runtime::providers;
 use clap::Parser;
 use anyhow::Result;
+use std::io::{self, Write};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,16 +13,20 @@ async fn main() -> Result<()> {
         Commands::Send { provider, message } => {
             let bridge_url = cli.bridge_url.as_deref().unwrap_or("ws://127.0.0.1:9527");
             let mut bridge_client = BridgeClient::new(bridge_url);
-            bridge_client.connect().await?;
-            
-            use std::io::{self, Write};
+            bridge_client.connect(bridge_url).await?;
+
             let provider_impl = providers::create_provider(&provider)?;
-            provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
+            let result = provider_impl.send(&mut bridge_client, &message, Box::new(|chunk| {
                 print!("{}", chunk);
                 let _ = io::stdout().flush();
-            })).await?;
-            
+            })).await;
+
             println!();
+
+            // Properly close the WebSocket connection with close handshake
+            bridge_client.disconnect().await?;
+
+            result?;
         }
         Commands::ListProviders => {
             let providers = providers::list_providers();

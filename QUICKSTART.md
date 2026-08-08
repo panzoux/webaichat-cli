@@ -81,10 +81,11 @@ web-llm-runtime/
 │   ├── core/           # Main runtime library
 │   └── browser-bridge/ # WebSocket bridge
 ├── browser-extension/  # Chrome Extension
-│   ├── manifest.json
-│   ├── background.js
-│   ├── content.js
-│   └── popup.html
+│   ├── manifest.json   # Extension config
+│   ├── background.js   # Service worker (WebSocket connection)
+│   ├── content.js      # Injected into pages (DOM operations)
+│   ├── popup.html      # Extension popup UI
+│   └── popup.js        # Popup logic
 ├── frontends/
 │   └── cli/            # CLI frontend
 └── docs/               # Documentation

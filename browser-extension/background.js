@@ -225,6 +225,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Forward to bridge
   sendToBridge(message);
 
+  // Show notification when response is complete
+  if (message.type === 'MessageEnd') {
+    const provider = message.provider || 'AI';
+    chrome.notifications.create({
+      type: 'basic',
+      title: `${provider} Response Ready`,
+      message: 'Check the CLI for the response',
+      priority: 2
+    }).catch(() => {
+      // Notifications might not be available
+    });
+  }
+
   sendResponse({ received: true });
   return true;
 });

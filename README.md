@@ -73,17 +73,18 @@ cargo run -p web-llm-cli -- send --provider chatgpt --message "Hello, how are yo
 
 ### Phase 1: Minimal POC
 - [x] Project structure
-- [ ] WebSocket communication
-- [ ] ChatGPT provider
-- [ ] CLI interface
+- [x] WebSocket communication
+- [x] ChatGPT provider
+- [x] CLI interface
+- [x] Chrome Extension
 
 ### Phase 2: Provider Abstraction
-- [ ] Multiple providers
-- [ ] Provider registry
+- [x] Multiple providers (ChatGPT, Gemini)
+- [x] Provider registry
 - [ ] Session management
 
 ### Phase 3: Streaming & Reconnect
-- [ ] Heartbeat system
+- [x] Heartbeat system
 - [ ] Reconnection logic
 - [ ] Cancel/interrupt support
 

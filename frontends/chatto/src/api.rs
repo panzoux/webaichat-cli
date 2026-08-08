@@ -211,7 +211,7 @@ fn tool_calls_finish_chunk_json(id: &str, model: &str) -> String {
 /// pass, where we just need the final text, not live delivery.
 async fn send_and_collect(bridge_url: &str, provider: &str, message: String) -> Result<String, String> {
     let mut bridge = BridgeClient::new(bridge_url);
-    bridge.connect().await.map_err(|e| format!("Bridge connection failed: {}", e))?;
+    bridge.connect(bridge_url).await.map_err(|e| format!("Bridge connection failed: {}", e))?;
     bridge
         .send_event(&BridgeEvent::SendMessage { provider: provider.to_string(), message })
         .await
@@ -321,7 +321,7 @@ async fn chat_completions(
         let bridge_url = spawn_bridge_url;
         let provider = spawn_provider;
         let mut bridge = BridgeClient::new(&bridge_url);
-        if let Err(e) = bridge.connect().await {
+        if let Err(e) = bridge.connect(&bridge_url).await {
             let _ = tx.send(Err(format!("Bridge connection failed: {}", e))).await;
             return;
         }
